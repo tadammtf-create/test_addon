@@ -86,13 +86,13 @@ def _draw_header_button(self, context):
 
     Bound to :class:`bpy.types.VIEW3D_HT_header` via
     :func:`register_header`. Renders a small icon-only operator
-    button so it slots into the existing header strip without taking
-    visual space away from Blender's own controls.
+    button that opens the Quick Launcher popup so the user gets a
+    discoverable entry point next to View / Select / Add.
     """
     layout = self.layout
     layout.separator(factor=0.4)
     layout.operator(
-        "aitk.open_sidebar",
+        "aitk.quick_launcher",
         text="",
         icon="SHADERFX",
         emboss=False,

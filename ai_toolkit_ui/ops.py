@@ -12,7 +12,14 @@ Operator naming uses the ``aitk`` category prefix.
 
 from __future__ import annotations
 
+import logging
+
 import bpy
+
+from . import presets
+
+
+logger = logging.getLogger("ai_toolkit")
 
 
 # Map module -> human label, used by the generic generate / cancel ops
@@ -36,6 +43,15 @@ _MODULE_ATTR = {
     "ASSISTANT": "assistant",
 }
 
+# Icon used in the Quick Launcher's module grid for each module.
+_MODULE_ICON = {
+    "TEXT_TO_3D": "FONT_DATA",
+    "IMAGE_TO_3D": "IMAGE_DATA",
+    "TEXTURING": "NODE_TEXTURE",
+    "RENDER_PREVIEW": "RESTRICT_RENDER_OFF",
+    "ASSISTANT": "OUTLINER_DATA_LIGHTPROBE",
+}
+
 
 def _aitk(context):
     """Return the root state PointerProperty or ``None`` if not registered."""
@@ -54,6 +70,48 @@ def _tag_redraw(context) -> None:
         for region in getattr(area, "regions", ()) or ():
             if getattr(region, "type", None) == "UI":
                 region.tag_redraw()
+        area.tag_redraw()
+
+
+def _push_recent(root, *, prompt: str, module: str) -> None:
+    """Push a new recent-actions entry to the top of the list.
+
+    Keeps the most recent 6 entries — beyond that the oldest are
+    dropped. Trims the prompt to 60 characters so the popup never
+    has to render a runaway label.
+    """
+    if not prompt:
+        return
+    item = root.recent.add()
+    item.text = prompt[:60]
+    item.module = _MODULE_LABELS.get(module, module)
+    item.label = "just now"
+    # The freshly-added item is at the end of the collection — move it
+    # to index 0 so the popup's first row is always the most recent.
+    try:
+        root.recent.move(len(root.recent) - 1, 0)
+    except Exception:  # noqa: BLE001 — CollectionProperty.move may be picky
+        pass
+    while len(root.recent) > 6:
+        try:
+            root.recent.remove(len(root.recent) - 1)
+        except Exception:  # noqa: BLE001
+            break
+
+
+def _global_status(root):
+    """Resolve a single (label, icon, alert) tuple from every module's state."""
+    states = []
+    for attr in _MODULE_ATTR.values():
+        module = getattr(root, attr, None)
+        if module is not None:
+            states.append(getattr(module, "status", "Ready") or "Ready")
+
+    if any(s == "Running…" for s in states):
+        return ("Running", "SORTTIME", False)
+    if any(s.startswith(("Failed", "Error")) for s in states):
+        return ("Error", "ERROR", True)
+    return ("Ready", "CHECKMARK", False)
 
 
 # ----------------------------------------------------------------------
@@ -64,10 +122,10 @@ def _tag_redraw(context) -> None:
 class AITK_OT_generate(bpy.types.Operator):
     """Stub generate action — updates the matching module's status row.
 
-    The actual generation pipeline is intentionally out of scope for the
-    visual pass. The operator records a deterministic status string so
-    the panel layout exercises every status branch (idle / running /
-    succeeded / failed) by changing this property elsewhere.
+    Also pushes the current prompt onto the recent-actions list so the
+    Quick Launcher's "Recent" section feels alive. The actual
+    generation pipeline is intentionally out of scope for the visual
+    pass.
     """
 
     bl_idname = "aitk.generate"
@@ -99,6 +157,18 @@ class AITK_OT_generate(bpy.types.Operator):
             return {"CANCELLED"}
 
         module.status = "Running…"
+
+        # Push the prompt to the recent list so the Quick Launcher
+        # surfaces it. Each module exposes a slightly different prompt
+        # field; we resolve them in turn and fall back to a placeholder.
+        prompt = (
+            getattr(module, "prompt", None)
+            or getattr(module, "image_path", None)
+            or getattr(module, "preset", None)
+            or ""
+        )
+        _push_recent(root, prompt=str(prompt), module=self.module)
+
         self.report({"INFO"}, f"{label}: queued (stub)")
         _tag_redraw(context)
         return {"FINISHED"}
@@ -289,6 +359,7 @@ class AITK_OT_assistant_send(bpy.types.Operator):
             + ("…" if len(prompt) > 120 else "")
         )
         self.report({"INFO"}, "Assistant: response ready (stub)")
+        _push_recent(root, prompt=prompt, module="ASSISTANT")
         _tag_redraw(context)
         return {"FINISHED"}
 
@@ -320,6 +391,220 @@ class AITK_OT_assistant_quick(bpy.types.Operator):
         return {"FINISHED"}
 
 
+# ----------------------------------------------------------------------
+# Quick Launcher popup — the click target of the floating button
+# ----------------------------------------------------------------------
+
+
+class AITK_OT_quick_launcher(bpy.types.Operator):
+    """Open the compact AI Toolkit Quick Launcher popup.
+
+    Uses :meth:`bpy.types.WindowManager.invoke_popup` so Blender owns
+    the popup window, including auto-positioning inside the screen and
+    click-outside-to-close behaviour. The popup hosts a quick prompt
+    input, a primary Generate action, a 5-module shortcut grid, a
+    recent-actions list and footer shortcuts. Full settings stay in
+    the N-panel.
+    """
+
+    bl_idname = "aitk.quick_launcher"
+    bl_label = "AI Toolkit"
+    bl_description = "Open the AI Toolkit Quick Launcher"
+    bl_options = {"INTERNAL"}
+
+    def invoke(self, context, event):
+        # 300 px is wide enough for a two-row module grid and the
+        # quick-prompt input on a 1× UI scale and still narrow enough
+        # to feel like a floating launcher rather than a panel.
+        return context.window_manager.invoke_popup(self, width=300)
+
+    def execute(self, context):
+        # ``invoke_popup`` closes the popup when the user clicks
+        # outside; ``execute`` is only reached if something dispatches
+        # to this operator without ``invoke``. Nothing to do.
+        return {"FINISHED"}
+
+    def draw(self, context):
+        layout = self.layout
+        root = _aitk(context)
+        if root is None:
+            layout.label(text="AI Toolkit not initialised", icon="ERROR")
+            return
+
+        ui = root.ui
+
+        # ── Header ────────────────────────────────────────────────────
+        header = layout.row(align=True)
+        header.label(text="AI Toolkit", icon="SHADERFX")
+        sub = header.row(align=True)
+        sub.alignment = "RIGHT"
+        sub.enabled = False
+        sub.label(text="Quick Launcher")
+
+        # ── Status row ────────────────────────────────────────────────
+        status_label, status_icon, alert = _global_status(root)
+        status = layout.row(align=True)
+        status.scale_y = 0.85
+        status.alert = alert
+        status.label(text=status_label, icon=status_icon)
+        meta = status.row(align=True)
+        meta.alignment = "RIGHT"
+        meta.enabled = False
+        meta.label(text=f"Accent · {ui.accent_color.title()}")
+
+        layout.separator(factor=0.4)
+
+        # ── Quick prompt + Generate ───────────────────────────────────
+        box = layout.box()
+        box.scale_y = 0.95
+        head = box.row(align=True)
+        head.label(text="Quick Prompt", icon="GREASEPENCIL")
+        target = head.row(align=True)
+        target.alignment = "RIGHT"
+        target.enabled = False
+        target.label(text="→ Text-to-3D")
+
+        box.prop(root.text_to_3d, "prompt", text="")
+
+        gen_row = box.row(align=True)
+        gen_row.scale_y = 1.35
+        op = gen_row.operator("aitk.generate", text="Generate", icon="PLAY")
+        op.module = "TEXT_TO_3D"
+
+        # ── Module shortcut grid ──────────────────────────────────────
+        layout.separator(factor=0.4)
+        head = layout.row(align=True)
+        head.label(text="Modules", icon="OUTLINER")
+
+        grid = layout.grid_flow(
+            row_major=True, columns=3, even_columns=True, align=True,
+        )
+        grid.scale_y = 1.2
+        for key, label in _MODULE_LABELS.items():
+            icon = _MODULE_ICON.get(key, "DOT")
+            op = grid.operator(
+                "aitk.open_module",
+                text=label.replace("AI ", "").replace("Render Preview", "Render"),
+                icon=icon,
+            )
+            op.module = key
+
+        # ── Recent actions ────────────────────────────────────────────
+        layout.separator(factor=0.4)
+        head = layout.row(align=True)
+        head.label(text="Recent", icon="TIME")
+        clear = head.row(align=True)
+        clear.alignment = "RIGHT"
+        clear.scale_x = 0.9
+        if len(root.recent) > 0:
+            clear.operator("aitk.clear_recent", text="", icon="X", emboss=False)
+
+        recent_box = layout.box()
+        recent_box.scale_y = 0.85
+        if len(root.recent) == 0:
+            empty = recent_box.row()
+            empty.enabled = False
+            empty.label(text="No recent actions yet", icon="DOT")
+        else:
+            for item in list(root.recent)[:4]:
+                row = recent_box.row(align=True)
+                row.alignment = "LEFT"
+                text = item.text or "(no prompt)"
+                if len(text) > 32:
+                    text = text[:31] + "…"
+                row.label(text=text, icon="DOT")
+                meta = row.row(align=True)
+                meta.alignment = "RIGHT"
+                meta.enabled = False
+                meta.label(text=item.module)
+
+        # ── Footer shortcuts ──────────────────────────────────────────
+        layout.separator(factor=0.4)
+        footer = layout.row(align=True)
+        footer.scale_y = 1.0
+        footer.operator(
+            "aitk.open_sidebar", text="Open Panel", icon="MENU_PANEL",
+        )
+        footer.operator(
+            "aitk.open_docs", text="Docs", icon="HELP",
+        )
+        footer.operator(
+            "aitk.open_preferences", text="Prefs", icon="PREFERENCES",
+        )
+
+
+# ----------------------------------------------------------------------
+# Module shortcut — used by Quick Launcher grid
+# ----------------------------------------------------------------------
+
+
+class AITK_OT_open_module(bpy.types.Operator):
+    """Open the N-panel and focus a specific module.
+
+    Used by the Quick Launcher's module grid. Opens the AI Toolkit
+    sidebar tab (via ``aitk.open_sidebar``) and stamps the chosen
+    module key on ``ui.active_module`` so a follow-up enhancement can
+    auto-expand the matching sub-panel.
+    """
+
+    bl_idname = "aitk.open_module"
+    bl_label = "Open Module"
+    bl_description = "Open this module's full panel in the sidebar"
+    bl_options = {"INTERNAL"}
+
+    module: bpy.props.EnumProperty(
+        name="Module",
+        items=tuple(
+            (key, label, label) for key, label in _MODULE_LABELS.items()
+        ),
+        default="TEXT_TO_3D",
+        options={"HIDDEN"},
+    )
+
+    def execute(self, context):
+        root = _aitk(context)
+        if root is None:
+            return {"CANCELLED"}
+        # Record the active module so the sidebar can react visually.
+        try:
+            root.ui.active_module = self.module
+        except (TypeError, AttributeError):
+            pass
+
+        # Best-effort — the click router calls this from popup context.
+        try:
+            bpy.ops.aitk.open_sidebar()
+        except Exception:
+            logger.debug("aitk.open_sidebar dispatch failed", exc_info=True)
+
+        label = _MODULE_LABELS.get(self.module, self.module)
+        self.report({"INFO"}, f"Open: {label}")
+        _tag_redraw(context)
+        return {"FINISHED"}
+
+
+# ----------------------------------------------------------------------
+# Clear recent
+# ----------------------------------------------------------------------
+
+
+class AITK_OT_clear_recent(bpy.types.Operator):
+    """Clear the Quick Launcher's recent-actions list."""
+
+    bl_idname = "aitk.clear_recent"
+    bl_label = "Clear Recent"
+    bl_description = "Remove all entries from the recent-actions list"
+    bl_options = {"INTERNAL"}
+
+    def execute(self, context):
+        root = _aitk(context)
+        if root is None:
+            return {"CANCELLED"}
+        root.recent.clear()
+        _tag_redraw(context)
+        return {"FINISHED"}
+
+
 __all__ = [
     "AITK_OT_generate",
     "AITK_OT_cancel",
@@ -330,4 +615,7 @@ __all__ = [
     "AITK_OT_open_preferences",
     "AITK_OT_assistant_send",
     "AITK_OT_assistant_quick",
+    "AITK_OT_quick_launcher",
+    "AITK_OT_open_module",
+    "AITK_OT_clear_recent",
 ]

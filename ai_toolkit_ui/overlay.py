@@ -228,9 +228,11 @@ class AITK_OT_launcher_click_router(bpy.types.Operator):
         my = int(getattr(event, "mouse_region_y", -1))
         if x <= mx <= x + w and y <= my <= y + h:
             try:
-                bpy.ops.aitk.open_sidebar()
+                bpy.ops.aitk.quick_launcher("INVOKE_DEFAULT")
             except Exception:
-                logger.exception("Launcher click router: open_sidebar failed")
+                logger.exception(
+                    "Launcher click router: aitk.quick_launcher failed"
+                )
                 return {"CANCELLED"}
             return {"FINISHED"}
         return {"PASS_THROUGH"}

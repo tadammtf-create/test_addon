@@ -24,6 +24,20 @@ from . import presets
 # ----------------------------------------------------------------------
 
 
+class AITK_PG_recent_item(bpy.types.PropertyGroup):
+    """One entry in the Quick Launcher's recent-actions list.
+
+    Stored on :class:`AITK_PG_root` as a :class:`bpy.props.CollectionProperty`
+    so the recent list survives a .blend save/load cycle. Each entry is
+    intentionally tiny — three short strings — so a generous ring buffer
+    barely costs anything.
+    """
+
+    text: bpy.props.StringProperty(name="Prompt", default="")
+    module: bpy.props.StringProperty(name="Module", default="")
+    label: bpy.props.StringProperty(name="When", default="just now")
+
+
 class AITK_PG_ui_state(bpy.types.PropertyGroup):
     """Shared per-scene UI state: theme, accent, density toggles.
 
@@ -101,6 +115,19 @@ class AITK_PG_ui_state(bpy.types.PropertyGroup):
         default=20,
         min=0,
         max=4096,
+    )
+
+    active_module: bpy.props.EnumProperty(
+        name="Active Module",
+        description="Last module the user opened from the Quick Launcher",
+        items=(
+            ("TEXT_TO_3D", "Text-to-3D", "Text-to-3D"),
+            ("IMAGE_TO_3D", "Image-to-3D", "Image-to-3D"),
+            ("TEXTURING", "AI Texturing", "AI Texturing"),
+            ("RENDER_PREVIEW", "Render Preview", "Render Preview"),
+            ("ASSISTANT", "AI Assistant", "AI Assistant"),
+        ),
+        default="TEXT_TO_3D",
     )
 
 
@@ -400,6 +427,12 @@ class AITK_PG_root(bpy.types.PropertyGroup):
     render_preview: bpy.props.PointerProperty(type=AITK_PG_render_preview)
     assistant: bpy.props.PointerProperty(type=AITK_PG_assistant)
 
+    recent: bpy.props.CollectionProperty(
+        name="Recent",
+        description="Recent generation actions surfaced in the Quick Launcher",
+        type=AITK_PG_recent_item,
+    )
+
 
 __all__ = [
     "AITK_PG_ui_state",
@@ -408,5 +441,6 @@ __all__ = [
     "AITK_PG_texturing",
     "AITK_PG_render_preview",
     "AITK_PG_assistant",
+    "AITK_PG_recent_item",
     "AITK_PG_root",
 ]

@@ -28,6 +28,7 @@ from . import preferences, presets, ops, panels, header, overlay
 _classes: tuple = (
     # PropertyGroups — registered first so they are valid targets for the
     # PointerProperty attached to Scene below.
+    preferences.AITK_PG_recent_item,
     preferences.AITK_PG_text_to_3d,
     preferences.AITK_PG_image_to_3d,
     preferences.AITK_PG_texturing,
@@ -45,6 +46,9 @@ _classes: tuple = (
     ops.AITK_OT_open_preferences,
     ops.AITK_OT_assistant_send,
     ops.AITK_OT_assistant_quick,
+    ops.AITK_OT_quick_launcher,
+    ops.AITK_OT_open_module,
+    ops.AITK_OT_clear_recent,
     # Panels — root first, then sub-panels in display order.
     panels.AITK_PT_root,
     panels.AITK_PT_text_to_3d,
