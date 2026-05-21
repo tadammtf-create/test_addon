@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import bpy
 
-from . import preferences, presets, ops, panels
+from . import preferences, presets, ops, panels, header
 
 
 # Order matters: PropertyGroups must be registered before they are used
@@ -72,9 +72,21 @@ def register() -> None:
     # accent colour, etc. persist with the file.
     bpy.types.Scene.aitk = bpy.props.PointerProperty(type=preferences.AITK_PG_root)
 
+    # 3D Viewport header entry point — small icon next to View/Select/Add.
+    # Registered last so its operator can reference the just-attached
+    # Scene.aitk pointer.
+    header.register_header()
+
 
 def unregister() -> None:
     """Unregister every class and detach the per-scene state pointer."""
+    # Tear down the header entry point first so its draw function stops
+    # being called before the operators it references are unregistered.
+    try:
+        header.unregister_header()
+    except Exception:  # noqa: BLE001
+        pass
+
     # Detach the Scene pointer first so panels that read it during an
     # unregister-triggered redraw see ``None`` rather than a dangling
     # PropertyGroup.
