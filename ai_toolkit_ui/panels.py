@@ -190,7 +190,7 @@ class AITK_PT_root(bpy.types.Panel):
                 _section_header(layout, "Accent", icon="COLOR")
             swatch = layout.row(align=True)
             swatch.scale_y = 0.95
-            for key, label, _desc, icon in presets.ACCENT_COLORS:
+            for key, label, _desc, icon, _num in presets.ACCENT_COLORS:
                 sub = swatch.row(align=True)
                 sub.scale_x = 1.0
                 # The depress kwarg gives native pressed-state styling
@@ -582,7 +582,7 @@ class AITK_PT_assistant(bpy.types.Panel):
         # Mode picker — three pill-style buttons feel more chat-app
         # than a dropdown, which fits the conversational module.
         mode_row = layout.row(align=True)
-        for key, label, _desc, icon in presets.ASSISTANT_MODES:
+        for key, label, _desc, icon, _num in presets.ASSISTANT_MODES:
             sub = mode_row.row(align=True)
             sub.scale_y = 0.9
             sub.prop_enum(state, "mode", key, text=label if not compact else "", icon=icon)
@@ -621,7 +621,7 @@ class AITK_PT_assistant(bpy.types.Panel):
         )
         for action_id, action_label, action_icon in (
             ("describe_scene", "Describe", "VIEWZOOM"),
-            ("suggest_lighting", "Light", "LIGHT"),
+            ("suggest_lighting", "Light", "LIGHT_SUN"),
             ("optimise_mesh", "Optimise", "MOD_DECIM"),
             ("auto_rig", "Auto-Rig", "ARMATURE_DATA"),
         ):
