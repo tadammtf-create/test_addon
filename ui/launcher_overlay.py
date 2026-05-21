@@ -28,6 +28,7 @@ Validates: Requirements 1.1, 1.3, 1.4, 1.5, 1.6, 1.8, 1.9, 1.10, 12.2,
 
 from __future__ import annotations
 
+import inspect
 import logging
 from typing import Optional, Tuple
 
@@ -55,6 +56,21 @@ logger = logging.getLogger("ai_toolkit")
 # "32 pixels" and is consumed by both the drawing code below and the
 # click router in ui/operators/launcher_ops.py via :func:`get_launcher_rect`.
 LAUNCHER_BUTTON_SIZE: int = 32
+
+
+# Blender 4.3+ added an ``is_scene_linear_with_rec709_srgb_target`` kwarg
+# to ``draw_texture_2d`` that gamma-corrects scene-linear textures (the
+# format ``gpu.texture.from_image`` returns) to the sRGB framebuffer.
+# Blender 4.0–4.2.x does NOT have this parameter — passing it raises
+# ``TypeError`` and the caller never sees the icon draw. Detect once at
+# import time so the draw handler can pick the right call shape.
+try:
+    _DRAW_TEXTURE_2D_HAS_SCENE_LINEAR_KWARG: bool = (
+        "is_scene_linear_with_rec709_srgb_target"
+        in inspect.signature(draw_texture_2d).parameters
+    )
+except (TypeError, ValueError):  # builtins may not expose a signature
+    _DRAW_TEXTURE_2D_HAS_SCENE_LINEAR_KWARG = False
 
 
 # ---------------------------------------------------------------------------
@@ -96,35 +112,25 @@ def bind_settings(settings: SettingsStore) -> None:
     """Bind the :class:`SettingsStore` the draw handler reads each frame.
 
     Called by ``__init__.register()`` (task 24.1) before :func:`register`.
-    Triggers a one-time icon load so the icon image is cached across
-    draws (Requirement 1.6, 1.13, 1.14, 12.6).
+    The icon itself is **not** loaded here — ``bpy.data`` is restricted
+    during addon registration (Blender wraps it in ``_RestrictData``
+    until startup finishes), so any ``bpy.data.images.load(...)`` call
+    here raises ``AttributeError: '_RestrictData' object has no attribute
+    'images'`` and ``_icon`` is left as ``None``. The icon is instead
+    lazy-loaded on the first ``_draw_callback`` invocation, by which
+    point ``bpy.data`` is fully available (Requirement 1.6, 1.13, 1.14,
+    12.6).
 
-    Idempotent: calling this multiple times rebinds the store but only
-    loads the icon once. The icon is reset by :func:`unregister`.
-
-    Failures inside :meth:`LauncherIcon.load` are already swallowed by
-    that loader (it descends a fallback chain and always returns a
-    non-null icon). The wider try/except here is purely defensive: a
-    Blender API regression in a future version must not stop the
-    addon from registering.
+    Idempotent: calling this multiple times rebinds the store and
+    resets the icon-failure rate-limit counter so a rebind (e.g. user
+    changed the custom icon path) gets a fresh chance to surface a
+    real warning.
     """
-    global _settings, _icon, _icon_error_count
+    global _settings, _icon_error_count
     _settings = settings
     # Rebind is a fresh attempt: reset the icon-failure rate limiter so
     # a transient earlier failure does not silence a real new one.
     _icon_error_count = 0
-    if _icon is None:
-        try:
-            custom = settings.get(LAUNCHER_CUSTOM_ICON) or ""
-            _icon = LauncherIcon.load(custom if custom else None)
-        except Exception as exc:  # noqa: BLE001 -- defensive guard
-            logger.warning(
-                "Launcher icon load failed during bind_settings: %s: %s; "
-                "the launcher will draw without an icon.",
-                type(exc).__name__,
-                exc,
-            )
-            _icon = None
 
 
 def get_launcher_rect(settings: SettingsStore) -> Tuple[int, int, int, int]:
@@ -272,7 +278,7 @@ def _draw_callback() -> None:
     deregisters draw handlers that raise, which would leave the
     launcher invisible until the addon is reloaded.
     """
-    global _draw_error_count, _icon_error_count
+    global _draw_error_count, _icon_error_count, _icon
     try:
         # Initialisation race: ``register()`` may have run before
         # ``bind_settings()``. Skip silently — the next redraw will pick
@@ -296,6 +302,29 @@ def _draw_callback() -> None:
 
         # Resolve the rectangle (Requirements 1.1, 1.3, 1.5).
         x, y, w, h = get_launcher_rect(_settings)
+
+        # Lazy-load the icon on the first draw. ``bind_settings`` runs
+        # while ``bpy.data`` is still a ``_RestrictData`` proxy during
+        # addon registration, which means ``bpy.data.images.load(...)``
+        # raises ``AttributeError`` there. By the time the first draw
+        # callback fires Blender has finished its startup file load and
+        # ``bpy.data`` is fully available, so the load succeeds here.
+        # The result is cached in ``_icon`` and reused on every
+        # subsequent draw (Requirement 1.6, 1.13, 1.14, 12.6).
+        if _icon is None:
+            try:
+                custom = _settings.get(LAUNCHER_CUSTOM_ICON) or ""
+                _icon = LauncherIcon.load(custom if custom else None)
+            except Exception as exc:  # noqa: BLE001 -- defensive
+                if _icon_error_count < _ICON_ERROR_LOG_LIMIT:
+                    logger.warning(
+                        "Launcher icon lazy-load failed (%s: %s); "
+                        "the launcher will draw the accent fallback.",
+                        type(exc).__name__,
+                        exc,
+                    )
+                _icon_error_count += 1
+                _icon = None
 
         # Resolve theme tokens. ``load_theme`` never raises — on any
         # failure it logs and returns built-in defaults (Requirement
@@ -334,19 +363,41 @@ def _draw_callback() -> None:
                     # the accent square.
                     # https://docs.blender.org/api/current/gpu.texture.html
                     texture = gpu.texture.from_image(_icon.image)
-                    # ``is_scene_linear_with_rec709_srgb_target=True`` is
-                    # the documented setting for drawing a
-                    # ``bpy.types.Image`` texture inside a POST_PIXEL
-                    # SpaceView3D draw handler — without it the PNG
-                    # comes out washed out / wrongly gamma-corrected.
-                    draw_texture_2d(
-                        texture,
-                        (x + inset, y + inset),
-                        w - 2 * inset,
-                        h - 2 * inset,
-                        is_scene_linear_with_rec709_srgb_target=True,
-                    )
+                    # Blender 4.3+ exposes a colour-space-aware kwarg
+                    # that gamma-corrects scene-linear textures to the
+                    # sRGB framebuffer; on 4.0–4.2.x the same kwarg
+                    # raises ``TypeError``. Branch on the runtime
+                    # detection performed at module import time.
+                    if _DRAW_TEXTURE_2D_HAS_SCENE_LINEAR_KWARG:
+                        draw_texture_2d(
+                            texture,
+                            (x + inset, y + inset),
+                            w - 2 * inset,
+                            h - 2 * inset,
+                            is_scene_linear_with_rec709_srgb_target=True,
+                        )
+                    else:
+                        draw_texture_2d(
+                            texture,
+                            (x + inset, y + inset),
+                            w - 2 * inset,
+                            h - 2 * inset,
+                        )
                     icon_drawn = True
+                except ReferenceError as exc:
+                    # The underlying ``bpy.types.Image`` data-block was
+                    # removed (file reload, orphan purge, scene swap…)
+                    # while we held the Python wrapper. Drop the stale
+                    # reference so the next draw lazy-loads a fresh
+                    # ``Image`` from the same path.
+                    if _icon_error_count < _ICON_ERROR_LOG_LIMIT:
+                        logger.warning(
+                            "Launcher icon RNA was removed (%s); "
+                            "reloading on next draw.",
+                            exc,
+                        )
+                    _icon_error_count += 1
+                    _icon = None
                 except Exception as exc:  # noqa: BLE001 -- GPU texture may fail
                     # Rate-limited: the draw handler fires on every
                     # viewport redraw, so an unconditional warning here
@@ -354,7 +405,11 @@ def _draw_callback() -> None:
                     # Log the first few occurrences at WARNING so a real
                     # problem is visible, then go silent until the next
                     # ``bind_settings`` or ``unregister`` clears the
-                    # counter.
+                    # counter. ``has_data=False`` immediately after
+                    # ``bpy.data.images.load`` is normal for one or two
+                    # frames while Blender finishes the disk read;
+                    # ``gpu.texture.from_image`` recovers on its own
+                    # once ``has_data`` flips to ``True``.
                     if _icon_error_count < _ICON_ERROR_LOG_LIMIT:
                         logger.warning(
                             "Launcher icon GPU texture unavailable (%s: %s); "

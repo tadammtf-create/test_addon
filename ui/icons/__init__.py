@@ -73,6 +73,7 @@ class LauncherIcon:
             else:
                 try:
                     img = bpy.data.images.load(custom_path, check_existing=True)
+                    img.use_fake_user = True
                     return cls(img, source="custom")
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
@@ -86,6 +87,7 @@ class LauncherIcon:
         if os.path.isfile(BUILTIN_ICON_PATH):
             try:
                 img = bpy.data.images.load(BUILTIN_ICON_PATH, check_existing=True)
+                img.use_fake_user = True
                 return cls(img, source="builtin")
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
@@ -113,6 +115,7 @@ class LauncherIcon:
             height=_FALLBACK_SIZE,
             alpha=True,
         )
+        img.use_fake_user = True
         # Flat list of floats, RGBA per pixel, row-major.
         pixels = list(_FALLBACK_RGBA) * (_FALLBACK_SIZE * _FALLBACK_SIZE)
         img.pixels.foreach_set(pixels)
