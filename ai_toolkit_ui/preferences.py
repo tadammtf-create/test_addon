@@ -78,6 +78,31 @@ class AITK_PG_ui_state(bpy.types.PropertyGroup):
         max=1.0,
     )
 
+    show_launcher_button: bpy.props.BoolProperty(
+        name="Floating Launcher",
+        description=(
+            "Show the small AI Toolkit launcher button in the bottom-left "
+            "corner of the 3D Viewport. Click it to open the sidebar."
+        ),
+        default=True,
+    )
+
+    launcher_offset_x: bpy.props.IntProperty(
+        name="Launcher X",
+        description="Pixels from the viewport's left edge to the launcher button",
+        default=20,
+        min=0,
+        max=4096,
+    )
+
+    launcher_offset_y: bpy.props.IntProperty(
+        name="Launcher Y",
+        description="Pixels from the viewport's bottom edge to the launcher button",
+        default=20,
+        min=0,
+        max=4096,
+    )
+
 
 # ----------------------------------------------------------------------
 # Text-to-3D

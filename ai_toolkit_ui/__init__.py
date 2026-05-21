@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import bpy
 
-from . import preferences, presets, ops, panels, header
+from . import preferences, presets, ops, panels, header, overlay
 
 
 # Order matters: PropertyGroups must be registered before they are used
@@ -77,9 +77,22 @@ def register() -> None:
     # Scene.aitk pointer.
     header.register_header()
 
+    # Bottom-left floating launcher — the corner badge the user knows
+    # from the previous design, now wired to open the clean sidebar
+    # instead of the old GPU-drawn modal menu.
+    overlay.register_overlay()
+
 
 def unregister() -> None:
     """Unregister every class and detach the per-scene state pointer."""
+    # Tear down the floating-overlay click path and draw handler first
+    # so a stray viewport redraw can't fire after the operator behind
+    # its click router is gone.
+    try:
+        overlay.unregister_overlay()
+    except Exception:  # noqa: BLE001
+        pass
+
     # Tear down the header entry point first so its draw function stops
     # being called before the operators it references are unregistered.
     try:

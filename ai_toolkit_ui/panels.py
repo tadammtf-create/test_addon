@@ -707,6 +707,22 @@ class AITK_PT_settings(bpy.types.Panel):
         params.prop(ui, "accent_custom", text="Color")
 
         layout.separator(factor=0.3)
+
+        # Floating launcher controls — visibility + position. Keeps the
+        # corner badge entirely user-controlled so anyone who wants the
+        # viewport clean can hide the button and rely on the header
+        # icon or the N-key sidebar instead.
+        _section_header(layout, "Floating Launcher", icon="PIVOT_BOUNDBOX")
+        launcher = layout.column(align=True)
+        launcher.prop(ui, "show_launcher_button", toggle=True, icon="SHADERFX")
+        offsets = launcher.column(align=True)
+        offsets.enabled = ui.show_launcher_button
+        offsets.use_property_split = True
+        offsets.use_property_decorate = False
+        offsets.prop(ui, "launcher_offset_x", text="X Offset")
+        offsets.prop(ui, "launcher_offset_y", text="Y Offset")
+
+        layout.separator(factor=0.3)
         about = layout.column(align=True)
         about.scale_y = 0.9
         row = about.row(align=True)
