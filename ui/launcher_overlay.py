@@ -77,6 +77,15 @@ _icon: Optional[LauncherIcon] = None
 _draw_error_count: int = 0
 _DRAW_ERROR_LOG_LIMIT: int = 5
 
+# Separate rate-limit counter for the icon-GPU-texture failure path. The
+# icon failure is inside the draw loop and could otherwise log at every
+# viewport redraw (~60 Hz) when ``gpu.texture.from_image`` raises, which
+# would flood the console and degrade interactive performance. Reset on
+# ``unregister`` and ``bind_settings`` so a rebind (e.g. user changed the
+# custom icon path) gets a fresh chance to surface a real warning.
+_icon_error_count: int = 0
+_ICON_ERROR_LOG_LIMIT: int = 3
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -99,8 +108,11 @@ def bind_settings(settings: SettingsStore) -> None:
     Blender API regression in a future version must not stop the
     addon from registering.
     """
-    global _settings, _icon
+    global _settings, _icon, _icon_error_count
     _settings = settings
+    # Rebind is a fresh attempt: reset the icon-failure rate limiter so
+    # a transient earlier failure does not silence a real new one.
+    _icon_error_count = 0
     if _icon is None:
         try:
             custom = settings.get(LAUNCHER_CUSTOM_ICON) or ""
@@ -178,7 +190,7 @@ def unregister() -> None:
     The cached icon and rate-limit counter are also reset so a
     subsequent ``register()`` starts from a clean slate.
     """
-    global _draw_handle, _icon, _draw_error_count
+    global _draw_handle, _icon, _draw_error_count, _icon_error_count
     if _draw_handle is None:
         return
     try:
@@ -194,6 +206,7 @@ def unregister() -> None:
         _draw_handle = None
         _icon = None
         _draw_error_count = 0
+        _icon_error_count = 0
 
 
 # ---------------------------------------------------------------------------
@@ -259,7 +272,7 @@ def _draw_callback() -> None:
     deregisters draw handlers that raise, which would leave the
     launcher invisible until the addon is reloaded.
     """
-    global _draw_error_count
+    global _draw_error_count, _icon_error_count
     try:
         # Initialisation race: ``register()`` may have run before
         # ``bind_settings()``. Skip silently — the next redraw will pick
@@ -335,12 +348,21 @@ def _draw_callback() -> None:
                     )
                     icon_drawn = True
                 except Exception as exc:  # noqa: BLE001 -- GPU texture may fail
-                    logger.warning(
-                        "Launcher icon GPU texture unavailable (%s: %s); "
-                        "drawing accent fallback square.",
-                        type(exc).__name__,
-                        exc,
-                    )
+                    # Rate-limited: the draw handler fires on every
+                    # viewport redraw, so an unconditional warning here
+                    # would flood Blender's console at refresh rate.
+                    # Log the first few occurrences at WARNING so a real
+                    # problem is visible, then go silent until the next
+                    # ``bind_settings`` or ``unregister`` clears the
+                    # counter.
+                    if _icon_error_count < _ICON_ERROR_LOG_LIMIT:
+                        logger.warning(
+                            "Launcher icon GPU texture unavailable (%s: %s); "
+                            "drawing accent fallback square.",
+                            type(exc).__name__,
+                            exc,
+                        )
+                    _icon_error_count += 1
 
             # Fallback: a solid accent-coloured square. Required so the
             # launcher button is never blank when the icon's GPU texture
