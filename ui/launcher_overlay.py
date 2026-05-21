@@ -293,49 +293,71 @@ def _draw_callback() -> None:
         bg_rgba = _hex_to_rgba(theme.bg_primary, alpha=0.95)
         accent_rgba = _hex_to_rgba(theme.accent, alpha=1.0)
 
-        # Background quad (Requirements 1.4, 12.2 — theme-derived bg).
-        shader = gpu.shader.from_builtin('UNIFORM_COLOR')
-        _draw_filled_rect(shader, x, y, w, h, bg_rgba)
+        # Enable ALPHA blending so the translucent background (alpha
+        # 0.95) and PNG transparency composite correctly over the
+        # viewport. The previous state is saved and restored after the
+        # icon draw so we never leak GPU state into other draw handlers
+        # (Blender docs: draw_texture_2d / blend_set).
+        prev_blend = gpu.state.blend_get()
+        gpu.state.blend_set('ALPHA')
+        try:
+            # Background quad (Requirements 1.4, 12.2 — theme-derived bg).
+            shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+            _draw_filled_rect(shader, x, y, w, h, bg_rgba)
 
-        # Icon: 4 px inset on every side so the background reads as a
-        # frame around the icon. The icon is loaded once at
-        # ``bind_settings`` time and cached in ``_icon``.
-        icon_drawn = False
-        inset = 4
-        if _icon is not None and getattr(_icon, "image", None) is not None:
-            try:
-                # ``gpu_texture()`` is the documented way to obtain a
-                # GPU-side texture from a ``bpy.types.Image``. It can
-                # fail on un-rendered or freshly-loaded images, hence
-                # the try/except.
-                texture = _icon.image.gpu_texture()
-                draw_texture_2d(
-                    texture,
-                    (x + inset, y + inset),
+            # Icon: 4 px inset on every side so the background reads as
+            # a frame around the icon. The icon is loaded once at
+            # ``bind_settings`` time and cached in ``_icon``.
+            icon_drawn = False
+            inset = 4
+            if _icon is not None and getattr(_icon, "image", None) is not None:
+                try:
+                    # ``gpu.texture.from_image(image)`` is the
+                    # documented Blender 3.2+/4.x API for obtaining a
+                    # GPUTexture backed by a ``bpy.types.Image``.
+                    # ``bpy.types.Image`` itself has no ``gpu_texture``
+                    # attribute, which is why the previous call always
+                    # raised AttributeError and silently fell back to
+                    # the accent square.
+                    # https://docs.blender.org/api/current/gpu.texture.html
+                    texture = gpu.texture.from_image(_icon.image)
+                    # ``is_scene_linear_with_rec709_srgb_target=True`` is
+                    # the documented setting for drawing a
+                    # ``bpy.types.Image`` texture inside a POST_PIXEL
+                    # SpaceView3D draw handler — without it the PNG
+                    # comes out washed out / wrongly gamma-corrected.
+                    draw_texture_2d(
+                        texture,
+                        (x + inset, y + inset),
+                        w - 2 * inset,
+                        h - 2 * inset,
+                        is_scene_linear_with_rec709_srgb_target=True,
+                    )
+                    icon_drawn = True
+                except Exception as exc:  # noqa: BLE001 -- GPU texture may fail
+                    logger.warning(
+                        "Launcher icon GPU texture unavailable (%s: %s); "
+                        "drawing accent fallback square.",
+                        type(exc).__name__,
+                        exc,
+                    )
+
+            # Fallback: a solid accent-coloured square. Required so the
+            # launcher button is never blank when the icon's GPU texture
+            # is not ready (Requirements 1.13, 1.14, 12.5).
+            if not icon_drawn:
+                _draw_filled_rect(
+                    shader,
+                    x + inset,
+                    y + inset,
                     w - 2 * inset,
                     h - 2 * inset,
+                    accent_rgba,
                 )
-                icon_drawn = True
-            except Exception as exc:  # noqa: BLE001 -- gpu_texture() may fail
-                logger.debug(
-                    "Launcher icon GPU texture unavailable (%s: %s); "
-                    "drawing accent fallback square.",
-                    type(exc).__name__,
-                    exc,
-                )
-
-        # Fallback: a solid accent-coloured square. Required so the
-        # launcher button is never blank when the icon's GPU texture is
-        # not ready (Requirements 1.13, 1.14, 12.5).
-        if not icon_drawn:
-            _draw_filled_rect(
-                shader,
-                x + inset,
-                y + inset,
-                w - 2 * inset,
-                h - 2 * inset,
-                accent_rgba,
-            )
+        finally:
+            # Restore the prior blend mode so we don't leak state into
+            # other draw handlers running on the same redraw pass.
+            gpu.state.blend_set(prev_blend)
 
     except Exception as exc:  # noqa: BLE001 -- never crash Blender's draw loop
         if _draw_error_count < _DRAW_ERROR_LOG_LIMIT:
